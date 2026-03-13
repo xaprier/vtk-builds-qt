@@ -27,8 +27,9 @@ on:
 
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
-  CMAKE_OPTIONS: -DVTK_BUILD_EXAMPLES=OFF -DVTK_BUILD_TESTING=OFF -DCMAKE_VERBOSE_MAKEFILE=ON
+  CMAKE_OPTIONS: -DVTK_BUILD_EXAMPLES=OFF -DVTK_BUILD_TESTING=OFF -DCMAKE_VERBOSE_MAKEFILE=ON -DVTK_GROUP_ENABLE_Qt=YES -DVTK_GROUP_ENABLE_VTK_GUISupportQt=YES -DVTK_GROUP_ENABLE_VTK_GUISupportQtQuick=YES -DVTK_GROUP_ENABLE_VTK_ViewsQt=YES
   BUILD_TYPE: Release
+  QT_VERSION: 6.10.1
 
 jobs:
   create_release:
@@ -73,13 +74,10 @@ jobs:
         draft: false
         prerelease: false
 
-  build:
-    runs-on: ${{ matrix.os }}
+  build_windows:
+    runs-on: windows-latest
     needs: [create_release]
-    name: Build Windows & Mac
-    strategy:
-        matrix:
-            os: [windows-latest, macOS-14]
+    name: Build Windows x86_64
 
     steps:
     - uses: actions/checkout@v6
@@ -93,7 +91,7 @@ jobs:
     - name: Extract VTK tgz
       run: |
           tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
-    
+
     - name: Patch VTK
       run: |
           ls .
@@ -103,13 +101,25 @@ jobs:
           fi
       shell: bash
 
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+          version: ${{ env.QT_VERSION }}
+          arch: "win64_msvc2022_64"
+          dir: "${{ github.workspace }}/qt/"
+          modules: "qtmultimedia qtcharts"
+          install-deps: "true"
+          set-env: "true"
+
+    - name: Debug Qt installation
+      shell: bash
+      run: |
+          echo "QT_ROOT_DIR: $QT_ROOT_DIR"
+          ls "$QT_ROOT_DIR" && echo "Qt dir OK" || echo "ERROR: QT_ROOT_DIR not accessible"
+
     - name: Create installation folder
       run: |
           mkdir -p ${{github.workspace}}/install
-
-    - name: Install dependencies (Linux)
-      run: sudo apt update && sudo apt install libopenmpi-dev libopengl-dev libglx-dev libglw-dev
-      if: runner.os == 'Linux'
 
     - name: BUILD_SHARED_LIBS value
       uses: haya14busa/action-cond@v1
@@ -120,23 +130,14 @@ jobs:
         if_false: -DBUILD_SHARED_LIBS=OFF
 
     - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ${{env.CMAKE_OPTIONS}} ${{ steps.BUILD_SHARED_LIBS.outputs.value }} -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ${{env.CMAKE_OPTIONS}} ${{ steps.BUILD_SHARED_LIBS.outputs.value }} -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}
 
     - name: Build
-      id: build
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j ${{inputs.threads}}
 
     - name: Install
       working-directory: ${{github.workspace}}/build
       run: cmake --install ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
-
-    - name: Determine the architecture
-      uses: haya14busa/action-cond@v1
-      id: arch
-      with:
-        cond: ${{ runner.arch == 'ARM64' }}
-        if_true: arm64
-        if_false: x86_64
 
     - name: Create tar.gz
       uses: a7ul/tar-action@v1.2.0
@@ -144,7 +145,7 @@ jobs:
         command: c
         cwd: ${{github.workspace}}/install
         files: ./
-        outPath: ${{github.workspace}}/vtk-${{ runner.os }}-${{ steps.arch.outputs.value }}.tar.gz
+        outPath: ${{github.workspace}}/vtk-Windows-x86_64.tar.gz
 
     - name: Upload tar.gz
       uses: actions/upload-release-asset@v1
@@ -152,54 +153,56 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ needs.create_release.outputs.upload_url }}
-        asset_path: ${{github.workspace}}/vtk-${{ runner.os }}-${{ steps.arch.outputs.value }}.tar.gz
-        asset_name: vtk-${{ runner.os }}-${{ steps.arch.outputs.value }}.tar.gz
+        asset_path: ${{github.workspace}}/vtk-Windows-x86_64.tar.gz
+        asset_name: vtk-Windows-x86_64.tar.gz
         asset_content_type: application/zip
 
-  # ========================
-  # MULTIARCH: Common
-  # ========================
-  build_multiarch_common:
+  build_ubuntu:
     runs-on: ubuntu-22.04
     needs: [create_release]
-    name: Build Common on ${{ matrix.base_image }}
-
-    strategy:
-      matrix:
-        include:
-          - arch: none
-            distro: none
-            base_image: manylinux2014_x86_64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_i686
-          - arch: none
-            distro: none
-            base_image: manylinux2014_aarch64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_ppc64le
-          - arch: none
-            distro: none
-            base_image: manylinux2014_s390x
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_x86_64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_i686
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_aarch64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_ppc64le
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_s390x
+    name: Build Ubuntu 22.04 x86_64
 
     steps:
     - uses: actions/checkout@v6
+
+    - name: download VTK
+      uses: suisei-cn/actions-download-file@v1.6.1
+      with:
+        url: https://vtk.org/files/release/${{ inputs.version_major }}.${{ inputs.version_minor }}/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
+        target: ${{github.workspace}}/
+
+    - name: Extract VTK tgz
+      run: |
+          tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
+
+    - name: Patch VTK
+      run: |
+          ls .
+          PATCH=./patches/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.patch
+          if [ -f "$PATCH" ]; then
+              patch -p0 < $PATCH
+          fi
+      shell: bash
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+          version: ${{ env.QT_VERSION }}
+          arch: "linux_gcc_64"
+          dir: "${{ github.workspace }}/qt/"
+          modules: "qtmultimedia qtcharts"
+          install-deps: "true"
+          set-env: "true"
+
+    - name: Debug Qt installation
+      shell: bash
+      run: |
+          echo "QT_ROOT_DIR: $QT_ROOT_DIR"
+          ls "$QT_ROOT_DIR" && echo "Qt dir OK" || echo "ERROR: QT_ROOT_DIR not accessible"
+
+    - name: Create installation folder
+      run: |
+          mkdir -p ${{github.workspace}}/install
 
     - name: BUILD_SHARED_LIBS value
       uses: haya14busa/action-cond@v1
@@ -209,728 +212,23 @@ jobs:
         if_true: -DBUILD_SHARED_LIBS=ON
         if_false: -DBUILD_SHARED_LIBS=OFF
 
-    - name: artifact name
-      uses: haya14busa/action-cond@v1
-      id: artifact_name
-      with:
-        cond: ${{ inputs.shared }}
-        if_true: compilation_${{ matrix.base_image }}_shared
-        if_false: compilation_${{ matrix.base_image }}_static
-
-    - name: Create folders
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/build
-          mkdir -p ${{github.workspace}}/artifacts/install
-
-    - name: download VTK
-      uses: suisei-cn/actions-download-file@v1.6.1
-      with:
-        url: https://vtk.org/files/release/${{ inputs.version_major }}.${{ inputs.version_minor }}/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
-        target: ${{github.workspace}}/
-
-    - name: Extract VTK tgz
-      run: |
-          tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz -C ${{github.workspace}}/artifacts/
-    
-    - name: Patch VTK
-      run: |
-          ls ${{github.workspace}}/artifacts/
-          cd ${{github.workspace}}/artifacts/
-          PATCH=${{github.workspace}}/patches/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.patch
-          if [ -f "$PATCH" ]; then
-              patch -p0 < $PATCH
-          fi
-          cd ${{github.workspace}}
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ${{env.CMAKE_OPTIONS}} ${{ steps.BUILD_SHARED_LIBS.outputs.value }} -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}
 
     - name: Build
-      uses: uraimo/run-on-arch-action@v3
-      with:
-        arch: ${{ matrix.arch }}
-        distro: ${{ matrix.distro }}
-        base_image: quay.io/pypa/${{ matrix.base_image }}
-
-        # Mount the artifacts directory as /artifacts in the container
-        dockerRunArgs: |
-          --volume "${{github.workspace}}/artifacts:/artifacts"
-
-        # Pass some environment variables to the container
-        env: | # YAML, but pipe character is necessary
-          version_major: ${{ inputs.version_major }}
-          version_minor: ${{ inputs.version_minor }}
-          version_patch: ${{ inputs.version_patch }}
-          threads: ${{ inputs.threads }}
-          BUILD_TYPE: ${{ env.BUILD_TYPE }}            
-          CMAKE_OPTIONS: ${{ env.CMAKE_OPTIONS }} ${{ steps.BUILD_SHARED_LIBS.outputs.value }}
-
-        shell: /bin/sh
-
-        run: |
-          cmake -B /artifacts/build -DCMAKE_BUILD_TYPE=${BUILD_TYPE} ${CMAKE_OPTIONS} -DCMAKE_INSTALL_PREFIX=/artifacts/install /artifacts/VTK-${version_major}.${version_minor}.${version_patch}
-          cd /artifacts/build
-          cmake --build ./ --config ${BUILD_TYPE} -j ${threads} --target ` make help | grep Common | sed 's/\.\.\./ /g' | tr '\n' ' ' `
-          cd ../..
-
-    - name: Create artifact
-      uses: a7ul/tar-action@v1.2.0
-      with:
-        command: c
-        cwd: ${{github.workspace}}/artifacts/build/
-        files: ./
-        outPath: ${{github.workspace}}/vtk-common-artifacts-${{ matrix.base_image }}.tar.gz
-
-    - uses: actions/upload-artifact@v7
-      with:
-        name: common_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/vtk-common-artifacts-${{ matrix.base_image }}.tar.gz
-
-  # ========================
-  # MULTIARCH: Filters
-  # ========================
-  build_multiarch_filters:
-    runs-on: ubuntu-22.04
-    needs: [build_multiarch_common]
-    name: Build Filters on ${{ matrix.base_image }}
-
-    strategy:
-      matrix:
-        include:
-          - arch: none
-            distro: none
-            base_image: manylinux2014_x86_64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_i686
-          - arch: none
-            distro: none
-            base_image: manylinux2014_aarch64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_ppc64le
-          - arch: none
-            distro: none
-            base_image: manylinux2014_s390x
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_x86_64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_i686
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_aarch64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_ppc64le
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_s390x
-
-    steps:
-    - uses: actions/checkout@v6
-
-    - name: artifact name
-      uses: haya14busa/action-cond@v1
-      id: artifact_name
-      with:
-        cond: ${{ inputs.shared }}
-        if_true: compilation_${{ matrix.base_image }}_shared
-        if_false: compilation_${{ matrix.base_image }}_static
-
-    - name: download VTK
-      uses: suisei-cn/actions-download-file@v1.6.1
-      with:
-        url: https://vtk.org/files/release/${{ inputs.version_major }}.${{ inputs.version_minor }}/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
-        target: ${{github.workspace}}/
-
-    - name: Extract VTK tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/
-          tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz -C ${{github.workspace}}/artifacts/
-
-    - name: Patch VTK
-      run: |
-          ls ${{github.workspace}}/artifacts/
-          cd ${{github.workspace}}/artifacts/
-          PATCH=${{github.workspace}}/patches/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.patch
-          if [ -f "$PATCH" ]; then
-              patch -p0 < $PATCH
-          fi
-          cd ${{github.workspace}}
-
-    - name: download previous compilation step
-      uses: actions/download-artifact@master
-      with:
-        name: common_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/
-
-    - name: Extract previous compilation step tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/build
-          tar -xvzf ${{github.workspace}}/vtk-common-artifacts-${{ matrix.base_image }}.tar.gz -C ${{github.workspace}}/artifacts/build/
-
-    - name: List files
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/install
-          ls ${{github.workspace}}/artifacts/
-
-    - name: Build
-      uses: uraimo/run-on-arch-action@v3
-      with:
-        arch: ${{ matrix.arch }}
-        distro: ${{ matrix.distro }}
-        base_image: quay.io/pypa/${{ matrix.base_image }}
-
-        # Mount the artifacts directory as /artifacts in the container
-        dockerRunArgs: |
-          --volume "${{github.workspace}}/artifacts:/artifacts"
-
-        # Pass some environment variables to the container
-        env: | # YAML, but pipe character is necessary
-          threads: ${{ inputs.threads }}
-          BUILD_TYPE: ${{ env.BUILD_TYPE }}            
-
-        shell: /bin/sh
-
-        run: |
-          cd /artifacts/build
-          cmake --build ./ --config ${BUILD_TYPE} -j ${threads} --target ` make help | grep Filters | sed 's/\.\.\./ /g' | tr '\n' ' ' `
-          cd ../..
-
-    - name: Create artifact
-      uses: a7ul/tar-action@v1.2.0
-      with:
-        command: c
-        cwd: ${{github.workspace}}/artifacts/build/
-        files: ./
-        outPath: ${{github.workspace}}/vtk-filters-artifacts-${{ matrix.base_image }}.tar.gz
-
-    - name: remove previous compilation step
-      uses: geekyeggo/delete-artifact@v5
-      with:
-        name: common_${{ steps.artifact_name.outputs.value }}
-
-    - uses: actions/upload-artifact@v7
-      with:
-        name: filters_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/vtk-filters-artifacts-${{ matrix.base_image }}.tar.gz
-        
-  # ========================
-  # MULTIARCH: Imaging
-  # ========================
-  build_multiarch_imaging:
-    runs-on: ubuntu-22.04
-    needs: [build_multiarch_filters]
-    name: Build Imaging on ${{ matrix.base_image }}
-
-    strategy:
-      matrix:
-        include:
-          - arch: none
-            distro: none
-            base_image: manylinux2014_x86_64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_i686
-          - arch: none
-            distro: none
-            base_image: manylinux2014_aarch64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_ppc64le
-          - arch: none
-            distro: none
-            base_image: manylinux2014_s390x
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_x86_64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_i686
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_aarch64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_ppc64le
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_s390x
-
-    steps:
-    - uses: actions/checkout@v6
-
-    - name: artifact name
-      uses: haya14busa/action-cond@v1
-      id: artifact_name
-      with:
-        cond: ${{ inputs.shared }}
-        if_true: compilation_${{ matrix.base_image }}_shared
-        if_false: compilation_${{ matrix.base_image }}_static
-
-    - name: download VTK
-      uses: suisei-cn/actions-download-file@v1.6.1
-      with:
-        url: https://vtk.org/files/release/${{ inputs.version_major }}.${{ inputs.version_minor }}/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
-        target: ${{github.workspace}}/
-
-    - name: Extract VTK tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/
-          tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz -C ${{github.workspace}}/artifacts/
-
-    - name: Patch VTK
-      run: |
-          ls ${{github.workspace}}/artifacts/
-          cd ${{github.workspace}}/artifacts/
-          PATCH=${{github.workspace}}/patches/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.patch
-          if [ -f "$PATCH" ]; then
-              patch -p0 < $PATCH
-          fi
-          cd ${{github.workspace}}
-
-    - name: download previous compilation step
-      uses: actions/download-artifact@master
-      with:
-        name: filters_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/
-
-    - name: Extract previous compilation step tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/build
-          tar -xvzf ${{github.workspace}}/vtk-filters-artifacts-${{ matrix.base_image }}.tar.gz -C ${{github.workspace}}/artifacts/build/
-
-    - name: List files
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/install
-          ls ${{github.workspace}}/artifacts/
-
-    - name: Build
-      uses: uraimo/run-on-arch-action@v3
-      with:
-        arch: ${{ matrix.arch }}
-        distro: ${{ matrix.distro }}
-        base_image: quay.io/pypa/${{ matrix.base_image }}
-
-        # Mount the artifacts directory as /artifacts in the container
-        dockerRunArgs: |
-          --volume "${{github.workspace}}/artifacts:/artifacts"
-
-        # Pass some environment variables to the container
-        env: | # YAML, but pipe character is necessary
-          threads: ${{ inputs.threads }}
-          BUILD_TYPE: ${{ env.BUILD_TYPE }}            
-
-        shell: /bin/sh
-
-        run: |
-          cd /artifacts/build
-          cmake --build ./ --config ${BUILD_TYPE} -j ${threads} --target ` make help | grep Imaging | sed 's/\.\.\./ /g' | tr '\n' ' ' `
-          cd ../..
-
-    - name: Create artifact
-      uses: a7ul/tar-action@v1.2.0
-      with:
-        command: c
-        cwd: ${{github.workspace}}/artifacts/build/
-        files: ./
-        outPath: ${{github.workspace}}/vtk-imaging-artifacts-${{ matrix.base_image }}.tar.gz
-
-    - name: remove previous compilation step
-      uses: geekyeggo/delete-artifact@v5
-      with:
-        name: filters_${{ steps.artifact_name.outputs.value }}
-
-    - uses: actions/upload-artifact@v7
-      with:
-        name: imaging_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/vtk-imaging-artifacts-${{ matrix.base_image }}.tar.gz
-        
-  # ========================
-  # MULTIARCH: Rendering
-  # ========================
-  build_multiarch_rendering:
-    runs-on: ubuntu-22.04
-    needs: [build_multiarch_imaging]
-    name: Build Rendering on ${{ matrix.base_image }}
-
-    strategy:
-      matrix:
-        include:
-          - arch: none
-            distro: none
-            base_image: manylinux2014_x86_64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_i686
-          - arch: none
-            distro: none
-            base_image: manylinux2014_aarch64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_ppc64le
-          - arch: none
-            distro: none
-            base_image: manylinux2014_s390x
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_x86_64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_i686
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_aarch64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_ppc64le
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_s390x
-
-    steps:
-    - uses: actions/checkout@v6
-
-    - name: artifact name
-      uses: haya14busa/action-cond@v1
-      id: artifact_name
-      with:
-        cond: ${{ inputs.shared }}
-        if_true: compilation_${{ matrix.base_image }}_shared
-        if_false: compilation_${{ matrix.base_image }}_static
-
-    - name: download VTK
-      uses: suisei-cn/actions-download-file@v1.6.1
-      with:
-        url: https://vtk.org/files/release/${{ inputs.version_major }}.${{ inputs.version_minor }}/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
-        target: ${{github.workspace}}/
-
-    - name: Extract VTK tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/
-          tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz -C ${{github.workspace}}/artifacts/
-
-    - name: Patch VTK
-      run: |
-          ls ${{github.workspace}}/artifacts/
-          cd ${{github.workspace}}/artifacts/
-          PATCH=${{github.workspace}}/patches/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.patch
-          if [ -f "$PATCH" ]; then
-              patch -p0 < $PATCH
-          fi
-          cd ${{github.workspace}}
-
-    - name: download previous compilation step
-      uses: actions/download-artifact@master
-      with:
-        name: imaging_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/
-
-    - name: Extract previous compilation step tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/build
-          tar -xvzf ${{github.workspace}}/vtk-imaging-artifacts-${{ matrix.base_image }}.tar.gz -C ${{github.workspace}}/artifacts/build/
-
-    - name: List files
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/install
-          ls ${{github.workspace}}/artifacts/
-
-    - name: Build
-      uses: uraimo/run-on-arch-action@v3
-      with:
-        arch: ${{ matrix.arch }}
-        distro: ${{ matrix.distro }}
-        base_image: quay.io/pypa/${{ matrix.base_image }}
-
-        # Mount the artifacts directory as /artifacts in the container
-        dockerRunArgs: |
-          --volume "${{github.workspace}}/artifacts:/artifacts"
-
-        # Pass some environment variables to the container
-        env: | # YAML, but pipe character is necessary
-          threads: ${{ inputs.threads }}
-          BUILD_TYPE: ${{ env.BUILD_TYPE }}            
-
-        shell: /bin/sh
-
-        run: |
-          cd /artifacts/build
-          cmake --build ./ --config ${BUILD_TYPE} -j ${threads} --target ` make help | grep Rendering | sed 's/\.\.\./ /g' | tr '\n' ' ' `
-          cd ../..
-
-    - name: Create artifact
-      uses: a7ul/tar-action@v1.2.0
-      with:
-        command: c
-        cwd: ${{github.workspace}}/artifacts/build/
-        files: ./
-        outPath: ${{github.workspace}}/vtk-rendering-artifacts-${{ matrix.base_image }}.tar.gz
-
-    - name: remove previous compilation step
-      uses: geekyeggo/delete-artifact@v5
-      with:
-        name: imaging_${{ steps.artifact_name.outputs.value }}
-
-    - uses: actions/upload-artifact@v7
-      with:
-        name: rendering_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/vtk-rendering-artifacts-${{ matrix.base_image }}.tar.gz
-        
-  # ========================
-  # MULTIARCH: IO
-  # ========================
-  build_multiarch_io:
-    runs-on: ubuntu-22.04
-    needs: [build_multiarch_rendering]
-    name: Build IO on ${{ matrix.base_image }}
-
-    strategy:
-      matrix:
-        include:
-          - arch: none
-            distro: none
-            base_image: manylinux2014_x86_64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_i686
-          - arch: none
-            distro: none
-            base_image: manylinux2014_aarch64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_ppc64le
-          - arch: none
-            distro: none
-            base_image: manylinux2014_s390x
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_x86_64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_i686
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_aarch64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_ppc64le
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_s390x
-
-    steps:
-    - uses: actions/checkout@v6
-
-    - name: artifact name
-      uses: haya14busa/action-cond@v1
-      id: artifact_name
-      with:
-        cond: ${{ inputs.shared }}
-        if_true: compilation_${{ matrix.base_image }}_shared
-        if_false: compilation_${{ matrix.base_image }}_static
-
-    - name: download VTK
-      uses: suisei-cn/actions-download-file@v1.6.1
-      with:
-        url: https://vtk.org/files/release/${{ inputs.version_major }}.${{ inputs.version_minor }}/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
-        target: ${{github.workspace}}/
-
-    - name: Extract VTK tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/
-          tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz -C ${{github.workspace}}/artifacts/
-
-    - name: Patch VTK
-      run: |
-          ls ${{github.workspace}}/artifacts/
-          cd ${{github.workspace}}/artifacts/
-          PATCH=${{github.workspace}}/patches/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.patch
-          if [ -f "$PATCH" ]; then
-              patch -p0 < $PATCH
-          fi
-          cd ${{github.workspace}}
-
-    - name: download previous compilation step
-      uses: actions/download-artifact@master
-      with:
-        name: rendering_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/
-
-    - name: Extract previous compilation step tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/build
-          tar -xvzf ${{github.workspace}}/vtk-rendering-artifacts-${{ matrix.base_image }}.tar.gz -C ${{github.workspace}}/artifacts/build/
-
-    - name: List files
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/install
-          ls ${{github.workspace}}/artifacts/
-
-    - name: Build
-      uses: uraimo/run-on-arch-action@v3
-      with:
-        arch: ${{ matrix.arch }}
-        distro: ${{ matrix.distro }}
-        base_image: quay.io/pypa/${{ matrix.base_image }}
-
-        # Mount the artifacts directory as /artifacts in the container
-        dockerRunArgs: |
-          --volume "${{github.workspace}}/artifacts:/artifacts"
-
-        # Pass some environment variables to the container
-        env: | # YAML, but pipe character is necessary
-          threads: ${{ inputs.threads }}
-          BUILD_TYPE: ${{ env.BUILD_TYPE }}            
-
-        shell: /bin/sh
-
-        run: |
-          cd /artifacts/build
-          cmake --build ./ --config ${BUILD_TYPE} -j ${threads} --target ` make help | grep IO | sed 's/\.\.\./ /g' | tr '\n' ' ' `
-          cd ../..
-
-    - name: Create artifact
-      uses: a7ul/tar-action@v1.2.0
-      with:
-        command: c
-        cwd: ${{github.workspace}}/artifacts/build/
-        files: ./
-        outPath: ${{github.workspace}}/vtk-io-artifacts-${{ matrix.base_image }}.tar.gz
-
-    - name: remove previous compilation step
-      uses: geekyeggo/delete-artifact@v5
-      with:
-        name: rendering_${{ steps.artifact_name.outputs.value }}
-
-    - uses: actions/upload-artifact@v7
-      with:
-        name: io_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/vtk-io-artifacts-${{ matrix.base_image }}.tar.gz
-        
-  # ========================
-  # MULTIARCH: All
-  # ========================
-  build_multiarch_all:
-    runs-on: ubuntu-22.04
-    needs: [create_release, build_multiarch_io]
-    name: Build All on ${{ matrix.base_image }}
-
-    strategy:
-      matrix:
-        include:
-          - arch: none
-            distro: none
-            base_image: manylinux2014_x86_64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_i686
-          - arch: none
-            distro: none
-            base_image: manylinux2014_aarch64
-          - arch: none
-            distro: none
-            base_image: manylinux2014_ppc64le
-          - arch: none
-            distro: none
-            base_image: manylinux2014_s390x
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_x86_64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_i686
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_aarch64
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_ppc64le
-          - arch: none
-            distro: none
-            base_image: musllinux_1_2_s390x
-
-    steps:
-    - uses: actions/checkout@v6
-
-    - name: artifact name
-      uses: haya14busa/action-cond@v1
-      id: artifact_name
-      with:
-        cond: ${{ inputs.shared }}
-        if_true: compilation_${{ matrix.base_image }}_shared
-        if_false: compilation_${{ matrix.base_image }}_static
-
-    - name: download VTK
-      uses: suisei-cn/actions-download-file@v1.6.1
-      with:
-        url: https://vtk.org/files/release/${{ inputs.version_major }}.${{ inputs.version_minor }}/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz
-        target: ${{github.workspace}}/
-
-    - name: Extract VTK tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/
-          tar -xvzf VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.tar.gz -C ${{github.workspace}}/artifacts/
-
-    - name: Patch VTK
-      run: |
-          ls ${{github.workspace}}/artifacts/
-          cd ${{github.workspace}}/artifacts/
-          PATCH=${{github.workspace}}/patches/VTK-${{ inputs.version_major }}.${{ inputs.version_minor }}.${{ inputs.version_patch }}.patch
-          if [ -f "$PATCH" ]; then
-              patch -p0 < $PATCH
-          fi
-          cd ${{github.workspace}}
-
-    - name: download previous compilation step
-      uses: actions/download-artifact@master
-      with:
-        name: io_${{ steps.artifact_name.outputs.value }}
-        path: ${{github.workspace}}/
-
-    - name: Extract previous compilation step tgz
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/build
-          tar -xvzf ${{github.workspace}}/vtk-io-artifacts-${{ matrix.base_image }}.tar.gz -C ${{github.workspace}}/artifacts/build/
-
-    - name: List files
-      run: |
-          mkdir -p ${{github.workspace}}/artifacts/install
-          ls ${{github.workspace}}/artifacts/
-
-    - name: Build
-      uses: uraimo/run-on-arch-action@v3
-      with:
-        arch: ${{ matrix.arch }}
-        distro: ${{ matrix.distro }}
-        base_image: quay.io/pypa/${{ matrix.base_image }}
-
-        # Mount the artifacts directory as /artifacts in the container
-        dockerRunArgs: |
-          --volume "${{github.workspace}}/artifacts:/artifacts"
-
-        # Pass some environment variables to the container
-        env: | # YAML, but pipe character is necessary
-          threads: ${{ inputs.threads }}
-          BUILD_TYPE: ${{ env.BUILD_TYPE }}            
-
-        shell: /bin/sh
-
-        run: |
-          cmake --build /artifacts/build --config ${BUILD_TYPE} -j ${threads}
-          cmake --install /artifacts/build --config ${BUILD_TYPE}
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j ${{inputs.threads}}
+
+    - name: Install
+      working-directory: ${{github.workspace}}/build
+      run: cmake --install ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
 
     - name: Create tar.gz
       uses: a7ul/tar-action@v1.2.0
       with:
         command: c
-        cwd: ${{github.workspace}}/artifacts/install/
+        cwd: ${{github.workspace}}/install
         files: ./
-        outPath: ${{github.workspace}}/vtk-${{ matrix.base_image }}.tar.gz
-
-    - name: remove previous compilation step
-      uses: geekyeggo/delete-artifact@v5
-      with:
-        name: io_${{ steps.artifact_name.outputs.value }}
+        outPath: ${{github.workspace}}/vtk-Linux-x86_64.tar.gz
 
     - name: Upload tar.gz
       uses: actions/upload-release-asset@v1
@@ -938,6 +236,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ needs.create_release.outputs.upload_url }}
-        asset_path: ${{github.workspace}}/vtk-${{ matrix.base_image }}.tar.gz
-        asset_name: vtk-${{ matrix.base_image }}.tar.gz
+        asset_path: ${{github.workspace}}/vtk-Linux-x86_64.tar.gz
+        asset_name: vtk-Linux-x86_64.tar.gz
         asset_content_type: application/zip
+
+ 
